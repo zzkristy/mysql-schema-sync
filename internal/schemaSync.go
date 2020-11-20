@@ -37,22 +37,22 @@ func (sc *SchemaSync) GetNewTableNames() []string {
 	return newTables
 }
 
-func (sc *SchemaSync) getAlterDataByTable(table string) *TableAlterData {
+func (sc *SchemaSync) getAlterDataByTable(sourceTable string, destTable string) *TableAlterData {
 	alter := new(TableAlterData)
-	alter.Table = table
+	alter.Table = destTable
 	alter.Type = alterTypeNo
 
-	sschema := sc.SourceDb.GetTableSchema(table)
-	dschema := sc.DestDb.GetTableSchema(table)
+	sschema := sc.SourceDb.GetTableSchema(sourceTable)
+	dschema := sc.DestDb.GetTableSchema(destTable)
 
-	alter.SchemaDiff = newSchemaDiff(table, sschema, dschema)
+	alter.SchemaDiff = newSchemaDiff(destTable, sschema, dschema)
 
 	if sschema == dschema {
 		return alter
 	}
 	if sschema == "" {
 		alter.Type = alterTypeDrop
-		alter.SQL = fmt.Sprintf("drop table `%s`;", table)
+		alter.SQL = fmt.Sprintf("drop table `%s`;", destTable)
 		return alter
 	}
 	if dschema == "" {
@@ -64,7 +64,7 @@ func (sc *SchemaSync) getAlterDataByTable(table string) *TableAlterData {
 	diff := sc.getSchemaDiff(alter)
 	if diff != "" {
 		alter.Type = alterTypeAlter
-		alter.SQL = fmt.Sprintf("ALTER TABLE `%s`\n%s;", table, diff)
+		alter.SQL = fmt.Sprintf("ALTER TABLE `%s`\n%s;", destTable, diff)
 	}
 
 	return alter
@@ -261,12 +261,24 @@ func CheckSchemaDiff(cfg *Config) {
 	})()
 
 	sc := NewSchemaSync(cfg)
-	newTables := sc.SourceDb.GetTableNames()
+	sourceTables := sc.SourceDb.GetTableNames()
+	newTables := []string{}
+	// 需要取多个分表中的某一个
+	sourceTableMap := make(map[string]string)
+	for _, table := range sourceTables {
+		names := strings.Split(table, "_")
+		name := strings.Join(names[0:len(names)-1], "_")
+		if _, ok := sourceTableMap[name]; !ok {
+			sourceTableMap[name] = table
+			newTables = append(newTables, table)
+		}
+	}
 	log.Println("source db table total:", len(newTables))
 
 	changedTables := make(map[string][]*TableAlterData)
+	destTables := sc.DestDb.GetTableNames()
 
-	for index, table := range newTables {
+	for index, table := range destTables {
 		log.Printf("Index : %d Table : %s\n", index, table)
 		if !cfg.CheckMatchTables(table) {
 			log.Println("Table:", table, "skip")
@@ -277,8 +289,18 @@ func CheckSchemaDiff(cfg *Config) {
 			log.Println("Table:", table, "skip")
 			continue
 		}
+		// 获取对应的原表
+		var sourceTable string
+		names := strings.Split(table, "_")
+		name := strings.Join(names[0:len(names)-1], "_")
+		if _, ok := sourceTableMap[name]; ok {
+			sourceTable = sourceTableMap[name]
+		}
+		if len(sourceTable) == 0 {
+			continue
+		}
 
-		sd := sc.getAlterDataByTable(table)
+		sd := sc.getAlterDataByTable(sourceTable, table)
 
 		if sd.Type != alterTypeNo {
 			fmt.Println(sd)
